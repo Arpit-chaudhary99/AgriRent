@@ -1,0 +1,60 @@
+{
+  "app_name": "AgriRent Pro",
+  "archetype": "ORGANIC & EARTHY",
+  "theme": "light",
+  "typography": {
+    "heading_font": "Merriweather",
+    "body_font": "Inter",
+    "weights": {
+      "light": "font-light",
+      "normal": "font-normal",
+      "bold": "font-bold",
+      "black": "font-black"
+    }
+  },
+  "colors": {
+    "primary": "#2D6A4F",
+    "primary_hover": "#1B4332",
+    "secondary": "#D4A373",
+    "accent": "#52B788",
+    "background": "#F4F1DE",
+    "card_bg": "#FFFFFF",
+    "text_main": "#2B2D42",
+    "text_muted": "#6C757D",
+    "border": "#E9EDC9"
+  },
+  "components": [
+    {
+      "name": "ToolCard",
+      "path": "/app/frontend/src/components/ToolCard.jsx",
+      "description": "Displays farming tool with hourly/daily pricing, availability status, and rent button"
+    },
+    {
+      "name": "SearchFilterBar",
+      "path": "/app/frontend/src/components/SearchFilterBar.jsx",
+      "description": "Category filters, search input, and availability toggle"
+    },
+    {
+      "name": "RentalModal",
+      "path": "/app/frontend/src/components/RentalModal.jsx",
+      "description": "Rental request flow with hours/days calculation and total cost preview"
+    },
+    {
+      "name": "RoleSwitcher",
+      "path": "/app/frontend/src/components/RoleSwitcher.jsx",
+      "description": "Demo mode switcher for Farmer, Tool Owner, and Admin views"
+    }
+  ],
+  "image_urls": {
+    "hero_tractor": "https://images.unsplash.com/photo-1606739211185-2c846d734a6d?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1NzV8MHwxfHNlYXJjaHwyfHxmYXJtaW5nJTIwdHJhY3RvciUyMHRyYWN0b3IlMjByZW50YWwlMjBhZ3JpY3VsdHVyYWwlMjBlcXVpcG1lbnR8ZW58MHx8fHwxNzg5ODkwMDA2fDA&ixlib=rb-4.1.0&q=85",
+    "harvester": "https://images.unsplash.com/photo-1614977645968-6db1d7798ac7?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1NTZ8MHwxfHNlYXJjaHwzfHxtb2Rlcm4lMjBmYXJtJTIwaGFydmVzdGVyJTIwdGlsbGVyJTIwdHJhY3RvcnxlbnwwfHx8fDE3ODk4OTAwMDZ8MA&ixlib=rb-4.1.0&q=85",
+    "tiller": "https://images.unsplash.com/photo-1602446692855-6d096499f69b?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1NzV8MHwxfHNlYXJjaHwzfHxmYXJtaW5nJTIwdHJhY3RvciUyMHRyYWN0b3IlMjByZW50YWwlMjBhZ3JpY3VsdHVyYWwlMjBlcXVpcG1lbnR8ZW58MHx8fHwxNzg5ODkwMDA2fDA&ixlib=rb-4.1.0&q=85"
+  },
+  "universal_guidelines": [
+    "All interactive elements must include data-testid attribute",
+    "No pure black #000 or pure white #FFF without tinting",
+    "Generous padding and spacing (p-6, p-8)",
+    "Glassmorphism with solid backing for headers",
+    "Role-aware demo mode toggle for seamless persona switching"
+  ]
+}
