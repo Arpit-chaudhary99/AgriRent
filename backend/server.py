@@ -73,12 +73,23 @@ class Rental(BaseModel):
     razorpay_payment_id: Optional[str] = None
     amount_paid: Optional[float] = None
     paid_at: Optional[str] = None
+    payment_method: Optional[str] = None
+    last_payment_error: Optional[str] = None
 
 class PaymentVerify(BaseModel):
     rental_id: str
     razorpay_payment_id: str
     razorpay_order_id: str
     razorpay_signature: str
+
+class PaymentFailure(BaseModel):
+    rental_id: str
+    razorpay_order_id: Optional[str] = None
+    razorpay_payment_id: Optional[str] = None
+    code: Optional[str] = None
+    description: Optional[str] = None
+    reason: Optional[str] = None
+    source: Optional[str] = "checkout"
 
 SEED_TOOLS = [
     {"id":"tool-001","name":"Compact Field Tractor","category":"Tractors","description":"Reliable 45 HP tractor for ploughing, hauling and everyday field work.","location":"Nashik, Maharashtra","owner":"Green Valley Co-op","hourly_rate":850,"daily_rate":5800,"available":True,"image_url":"https://images.unsplash.com/photo-1606739211185-2c846d734a6d?auto=format&fit=crop&w=900&q=80","rating":4.9},
@@ -156,10 +167,28 @@ async def verify_payment(input: PaymentVerify):
     except Exception:
         await db.rentals.update_one({"id": input.rental_id}, {"$set": {"payment_status": "PAYMENT_PENDING"}})
         raise HTTPException(status_code=400, detail="Payment signature verification failed")
+    payment_method = None
+    try:
+        fetched = razorpay_client.payment.fetch(input.razorpay_payment_id)
+        payment_method = fetched.get("method")
+    except Exception as e:
+        logger.warning(f"Could not fetch payment method for {input.razorpay_payment_id}: {e}")
     paid_at = datetime.now(timezone.utc).isoformat()
-    await db.rentals.update_one({"id": input.rental_id}, {"$set": {"status": "Paid", "payment_status": "paid", "razorpay_payment_id": input.razorpay_payment_id, "amount_paid": rental["total"], "paid_at": paid_at}})
-    await db.payments.update_one({"razorpay_payment_id": input.razorpay_payment_id}, {"$setOnInsert": {"rental_id": input.rental_id, "tool_name": rental["tool_name"], "renter_name": rental["renter_name"], "razorpay_order_id": input.razorpay_order_id, "razorpay_payment_id": input.razorpay_payment_id, "amount": rental["total"], "payment_status": "paid", "source": "checkout", "paid_at": paid_at}}, upsert=True)
-    return {"status": "paid", "rental_id": input.rental_id}
+    await db.rentals.update_one({"id": input.rental_id}, {"$set": {"status": "Paid", "payment_status": "paid", "razorpay_payment_id": input.razorpay_payment_id, "amount_paid": rental["total"], "paid_at": paid_at, "payment_method": payment_method}})
+    await db.tools.update_one({"id": rental["tool_id"]}, {"$set": {"available": False}})
+    await db.payments.update_one({"razorpay_payment_id": input.razorpay_payment_id}, {"$setOnInsert": {"rental_id": input.rental_id, "user_id": rental["renter_name"], "tool_name": rental["tool_name"], "renter_name": rental["renter_name"], "razorpay_order_id": input.razorpay_order_id, "razorpay_payment_id": input.razorpay_payment_id, "amount": rental["total"], "payment_status": "paid", "payment_method": payment_method, "source": "checkout", "paid_at": paid_at, "created_at": paid_at}}, upsert=True)
+    return {"status": "paid", "rental_id": input.rental_id, "payment_method": payment_method}
+
+@api_router.post("/payments/failed")
+async def record_payment_failure(input: PaymentFailure):
+    rental = await db.rentals.find_one({"id": input.rental_id}, {"_id": 0})
+    if not rental: raise HTTPException(status_code=404, detail="Rental not found")
+    if rental.get("payment_status") == "paid": return {"status": "paid", "duplicate": True}
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.rentals.update_one({"id": input.rental_id}, {"$set": {"payment_status": "PAYMENT_PENDING", "last_payment_error": (input.description or input.reason or input.code or "cancelled")}})
+    if input.razorpay_payment_id:
+        await db.payments.update_one({"razorpay_payment_id": input.razorpay_payment_id}, {"$set": {"rental_id": input.rental_id, "user_id": rental["renter_name"], "tool_name": rental["tool_name"], "renter_name": rental["renter_name"], "razorpay_order_id": input.razorpay_order_id or rental.get("razorpay_order_id"), "razorpay_payment_id": input.razorpay_payment_id, "amount": rental["total"], "payment_status": "failed", "source": input.source or "checkout", "failed_at": now_iso, "created_at": now_iso, "error_code": input.code, "error_description": input.description}}, upsert=True)
+    return {"status": "pending"}
 
 @api_router.post("/payments/webhook")
 async def razorpay_webhook(request: Request, x_razorpay_signature: Optional[str] = Header(None)):
@@ -179,19 +208,34 @@ async def razorpay_webhook(request: Request, x_razorpay_signature: Optional[str]
     order_id = entity.get("order_id")
     payment_id = entity.get("id")
     amount = (entity.get("amount") or 0) / 100
+    method = entity.get("method")
     if not order_id or not payment_id: return {"received": True, "ignored": True}
     rental = await db.rentals.find_one({"razorpay_order_id": order_id}, {"_id": 0})
     if not rental: return {"received": True, "unknown_order": order_id}
     now_iso = datetime.now(timezone.utc).isoformat()
     if event == "payment.captured" or event == "payment.authorized":
         if rental.get("payment_status") != "paid":
-            await db.rentals.update_one({"id": rental["id"]}, {"$set": {"status": "Paid", "payment_status": "paid", "razorpay_payment_id": payment_id, "amount_paid": amount, "paid_at": now_iso}})
-        await db.payments.update_one({"razorpay_payment_id": payment_id}, {"$setOnInsert": {"rental_id": rental["id"], "tool_name": rental.get("tool_name"), "renter_name": rental.get("renter_name"), "razorpay_order_id": order_id, "razorpay_payment_id": payment_id, "amount": amount, "payment_status": "paid", "source": "webhook", "paid_at": now_iso}}, upsert=True)
+            await db.rentals.update_one({"id": rental["id"]}, {"$set": {"status": "Paid", "payment_status": "paid", "razorpay_payment_id": payment_id, "amount_paid": amount, "paid_at": now_iso, "payment_method": method}})
+            await db.tools.update_one({"id": rental["tool_id"]}, {"$set": {"available": False}})
+        await db.payments.update_one({"razorpay_payment_id": payment_id}, {"$setOnInsert": {"rental_id": rental["id"], "user_id": rental.get("renter_name"), "tool_name": rental.get("tool_name"), "renter_name": rental.get("renter_name"), "razorpay_order_id": order_id, "razorpay_payment_id": payment_id, "amount": amount, "payment_status": "paid", "payment_method": method, "source": "webhook", "paid_at": now_iso, "created_at": now_iso}}, upsert=True)
     elif event == "payment.failed":
         if rental.get("payment_status") != "paid":
             await db.rentals.update_one({"id": rental["id"]}, {"$set": {"payment_status": "PAYMENT_PENDING"}})
-        await db.payments.update_one({"razorpay_payment_id": payment_id}, {"$set": {"rental_id": rental["id"], "tool_name": rental.get("tool_name"), "renter_name": rental.get("renter_name"), "razorpay_order_id": order_id, "razorpay_payment_id": payment_id, "amount": amount, "payment_status": "failed", "source": "webhook", "failed_at": now_iso}}, upsert=True)
+        await db.payments.update_one({"razorpay_payment_id": payment_id}, {"$set": {"rental_id": rental["id"], "user_id": rental.get("renter_name"), "tool_name": rental.get("tool_name"), "renter_name": rental.get("renter_name"), "razorpay_order_id": order_id, "razorpay_payment_id": payment_id, "amount": amount, "payment_status": "failed", "payment_method": method, "source": "webhook", "failed_at": now_iso, "created_at": now_iso}}, upsert=True)
     return {"received": True, "event": event}
+
+@api_router.get("/payments/methods")
+async def payment_methods():
+    """Diagnostic: report which Razorpay payment methods are enabled on this key."""
+    import httpx
+    kid = os.environ["RAZORPAY_KEY_ID"]
+    try:
+        async with httpx.AsyncClient(timeout=8) as http:
+            r = await http.get(f"https://api.razorpay.com/v1/methods?key_id={kid}")
+            data = r.json()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Could not reach Razorpay: {e}")
+    return {"upi_collect": bool(data.get("upi")), "upi_intent": bool(data.get("upi_intent")), "card": bool(data.get("card")), "netbanking": bool(data.get("netbanking")), "wallet": bool(data.get("wallet")), "mode": "test" if kid.startswith("rzp_test") else "live"}
 
 @api_router.get("/payments/history")
 async def payments_history():
