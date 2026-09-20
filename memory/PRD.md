@@ -1,63 +1,33 @@
-# AgriRent Pro — Product Requirements
+# AgriRent Pro — PRD
 
-## Original problem statement
-> a tool renting system where farmer can rent any kind  of tool relatead to farming
+## Overview
+Tool rental system for farmers with role-based access (USER, ADMIN). Farmers browse farming equipment, pick rental dates, pay via Razorpay UPI/Cards. Admins manage inventory, users, rentals and payments.
 
-## Product context
-AgriRent Pro is a demo-ready farming equipment rental marketplace for farmers, tool owners, and administrators. The selected MVP is intentionally sign-in-free so users can explore the experience quickly.
+## Stack
+- Backend: FastAPI + MongoDB + Razorpay + Emergent Object Storage
+- Frontend: React (CRA) + React Router + Sonner (toasts)
+- Auth: Emergent-managed Google Sign-in
+- Payments: Razorpay Test Mode
 
-## User personas
-- **Farmer:** searches local farming tools, compares hourly/daily rates, sends rental requests, and reviews history.
-- **Tool owner:** understands the marketplace context and can be represented through the role switcher while the owner management backlog is developed.
-- **Admin:** can preview the admin workspace persona and will later manage catalog and requests.
+## Roles
+- **USER**: browse tools, request rentals with start/end dates, cancel Requested rentals, pay approved rentals, view own payment history, manage profile
+- **ADMIN** (assigned by `ADMIN_EMAIL` env var): everything USER can do + admin console with tools/users/rentals/payments management
 
-## Architecture decisions
-- React frontend with responsive CSS and Lucide icons.
-- FastAPI backend with MongoDB using the protected `MONGO_URL` and `DB_NAME` environment values.
-- REST endpoints under `/api` for tools and rentals.
-- Seed-on-first-read tool catalog so the demo has useful content without manual setup.
-- No authentication, payments, or external integrations in this MVP.
+## Implemented
+- Google sign-in (Emergent), session cookie + Authorization header fallback, `/api/auth/me`, blocked-user gating (2026-02-20)
+- Rental with start_date / end_date (2026-02-20)
+- User isolation on `/api/rentals`, `/api/payments/history` (2026-02-20)
+- Admin panel: dashboard stats, tools CRUD + image upload (Emergent Object Storage), users list + block/unblock, rentals list + approve, payments ledger (2026-02-20)
+- Razorpay UPI checkout with retry + failure handlers, webhook, server-side signature verification (previous iterations)
 
-## Core requirements (static)
-- Browse and search farming tools.
-- Filter by category and availability.
-- Show tool image, owner, location, rating, and hourly/daily pricing.
-- Open a rental request modal with unit selection, duration stepper, and total preview.
-- Persist rental requests and show rental history.
-- Provide Farmer, Tool Owner, and Admin demo role switching.
-- Maintain usable desktop and mobile layouts.
+## Backlog
+- P1: Real email receipt via Resend after successful payment
+- P1: Refunds from admin ledger
+- P2: Multi-image gallery per tool
+- P2: Booking calendar with conflict detection (right now dates don't block overlapping rentals)
+- P3: Analytics — weekly revenue chart
 
-## What's been implemented
-
-### 2026-09-20
-- Replaced starter splash screen with AgriRent Pro dashboard.
-- Added seeded tractors, harvester, tiller, and seed drill catalog records.
-- Added `/api/tools`, `/api/tools/{tool_id}`, `/api/rentals` GET and POST endpoints.
-- Added search, category filters, availability toggle, responsive mobile navigation, role switcher, rental modal, pricing calculator, request confirmation, and rental history.
-- Verified backend API, production frontend build, and browser flow at desktop/mobile sizes with 100% test success.
-- Added Razorpay Test mode checkout with approval-gated order creation, paise conversion, server-side signature verification, and Farmer Pay now action.
-- Added Tool Owner/Admin approval controls and payment status handling; webhooks remain intentionally disabled.
-
-## Prioritized backlog
-
-### P0 — next core release
-- Tool owner catalog management: create, edit, pause, and remove listings.
-- Admin request queue with approve/reject status changes.
-- Date-range availability calendar and conflict prevention.
-- Move from Razorpay Test mode to Live mode only after matching live credentials and a production payment review.
-
-### P1 — trust and operations
-- Farmer and owner accounts with secure authentication.
-- Rental pickup/return details and contact information.
-- Notifications for request status changes.
-
-### P2 — growth
-- Online payments and invoices.
-- Ratings and reviews after completed rentals.
-- Location radius search and map-based discovery.
-
-## Next tasks
-1. Build owner listing management with availability controls.
-2. Add admin approval workflow for incoming rental requests.
-3. Add date-based booking availability.
-4. Add post-rental ratings and reviews.
+## Migration Notes
+- One-time: on startup, legacy rentals (created before auth) are wiped (`user_id` missing → delete). Same for orphan payments.
+- New user field: `role` (USER | ADMIN), `blocked` (bool)
+- New Rental fields: `user_id`, `user_email`, `start_date`, `end_date`, `days` (replaces `duration` + `unit`)
