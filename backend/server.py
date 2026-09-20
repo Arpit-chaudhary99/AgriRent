@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Query
+from fastapi import FastAPI, APIRouter, HTTPException, Query, Request, Header
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -70,6 +70,9 @@ class Rental(BaseModel):
     requested_at: str
     payment_status: str = "unpaid"
     razorpay_order_id: Optional[str] = None
+    razorpay_payment_id: Optional[str] = None
+    amount_paid: Optional[float] = None
+    paid_at: Optional[str] = None
 
 class PaymentVerify(BaseModel):
     rental_id: str
@@ -145,13 +148,54 @@ async def create_payment_order(rental_id: str):
 async def verify_payment(input: PaymentVerify):
     rental = await db.rentals.find_one({"id": input.rental_id}, {"_id": 0})
     if not rental: raise HTTPException(status_code=404, detail="Rental not found")
+    if rental.get("payment_status") == "paid":
+        return {"status": "paid", "rental_id": input.rental_id, "duplicate": True}
     if rental.get("razorpay_order_id") != input.razorpay_order_id: raise HTTPException(status_code=400, detail="Payment order does not match rental")
     try:
         razorpay_client.utility.verify_payment_signature({"razorpay_order_id": input.razorpay_order_id, "razorpay_payment_id": input.razorpay_payment_id, "razorpay_signature": input.razorpay_signature})
     except Exception:
+        await db.rentals.update_one({"id": input.rental_id}, {"$set": {"payment_status": "PAYMENT_PENDING"}})
         raise HTTPException(status_code=400, detail="Payment signature verification failed")
-    await db.rentals.update_one({"id": input.rental_id}, {"$set": {"status": "Paid", "payment_status": "paid"}})
+    paid_at = datetime.now(timezone.utc).isoformat()
+    await db.rentals.update_one({"id": input.rental_id}, {"$set": {"status": "Paid", "payment_status": "paid", "razorpay_payment_id": input.razorpay_payment_id, "amount_paid": rental["total"], "paid_at": paid_at}})
+    await db.payments.update_one({"razorpay_payment_id": input.razorpay_payment_id}, {"$setOnInsert": {"rental_id": input.rental_id, "tool_name": rental["tool_name"], "renter_name": rental["renter_name"], "razorpay_order_id": input.razorpay_order_id, "razorpay_payment_id": input.razorpay_payment_id, "amount": rental["total"], "payment_status": "paid", "source": "checkout", "paid_at": paid_at}}, upsert=True)
     return {"status": "paid", "rental_id": input.rental_id}
+
+@api_router.post("/payments/webhook")
+async def razorpay_webhook(request: Request, x_razorpay_signature: Optional[str] = Header(None)):
+    body = await request.body()
+    secret = os.environ.get("RAZORPAY_WEBHOOK_SECRET", "")
+    if not secret:
+        logger.warning("RAZORPAY_WEBHOOK_SECRET is not configured; rejecting webhook")
+        raise HTTPException(status_code=503, detail="Webhook secret not configured")
+    if not x_razorpay_signature: raise HTTPException(status_code=400, detail="Missing signature header")
+    try:
+        razorpay_client.utility.verify_webhook_signature(body.decode("utf-8"), x_razorpay_signature, secret)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid webhook signature")
+    payload = await request.json()
+    event = payload.get("event", "")
+    entity = payload.get("payload", {}).get("payment", {}).get("entity", {}) or {}
+    order_id = entity.get("order_id")
+    payment_id = entity.get("id")
+    amount = (entity.get("amount") or 0) / 100
+    if not order_id or not payment_id: return {"received": True, "ignored": True}
+    rental = await db.rentals.find_one({"razorpay_order_id": order_id}, {"_id": 0})
+    if not rental: return {"received": True, "unknown_order": order_id}
+    now_iso = datetime.now(timezone.utc).isoformat()
+    if event == "payment.captured" or event == "payment.authorized":
+        if rental.get("payment_status") != "paid":
+            await db.rentals.update_one({"id": rental["id"]}, {"$set": {"status": "Paid", "payment_status": "paid", "razorpay_payment_id": payment_id, "amount_paid": amount, "paid_at": now_iso}})
+        await db.payments.update_one({"razorpay_payment_id": payment_id}, {"$setOnInsert": {"rental_id": rental["id"], "tool_name": rental.get("tool_name"), "renter_name": rental.get("renter_name"), "razorpay_order_id": order_id, "razorpay_payment_id": payment_id, "amount": amount, "payment_status": "paid", "source": "webhook", "paid_at": now_iso}}, upsert=True)
+    elif event == "payment.failed":
+        if rental.get("payment_status") != "paid":
+            await db.rentals.update_one({"id": rental["id"]}, {"$set": {"payment_status": "PAYMENT_PENDING"}})
+        await db.payments.update_one({"razorpay_payment_id": payment_id}, {"$set": {"rental_id": rental["id"], "tool_name": rental.get("tool_name"), "renter_name": rental.get("renter_name"), "razorpay_order_id": order_id, "razorpay_payment_id": payment_id, "amount": amount, "payment_status": "failed", "source": "webhook", "failed_at": now_iso}}, upsert=True)
+    return {"received": True, "event": event}
+
+@api_router.get("/payments/history")
+async def payments_history():
+    return await db.payments.find({}, {"_id": 0}).sort("paid_at", -1).to_list(200)
 
 @api_router.post("/status", response_model=StatusCheck)
 async def create_status_check(input: StatusCheckCreate):
