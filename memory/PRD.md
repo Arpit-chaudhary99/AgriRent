@@ -35,6 +35,8 @@ AgriRent Pro is a demo-ready farming equipment rental marketplace for farmers, t
 - Added `/api/tools`, `/api/tools/{tool_id}`, `/api/rentals` GET and POST endpoints.
 - Added search, category filters, availability toggle, responsive mobile navigation, role switcher, rental modal, pricing calculator, request confirmation, and rental history.
 - Verified backend API, production frontend build, and browser flow at desktop/mobile sizes with 100% test success.
+- Added Razorpay Test mode checkout with approval-gated order creation, paise conversion, server-side signature verification, and Farmer Pay now action.
+- Added Tool Owner/Admin approval controls and payment status handling; webhooks remain intentionally disabled.
 
 ## Prioritized backlog
 
@@ -42,6 +44,7 @@ AgriRent Pro is a demo-ready farming equipment rental marketplace for farmers, t
 - Tool owner catalog management: create, edit, pause, and remove listings.
 - Admin request queue with approve/reject status changes.
 - Date-range availability calendar and conflict prevention.
+- Move from Razorpay Test mode to Live mode only after matching live credentials and a production payment review.
 
 ### P1 — trust and operations
 - Farmer and owner accounts with secure authentication.
