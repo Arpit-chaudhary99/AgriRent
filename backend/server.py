@@ -8,6 +8,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict
 from typing import List, Optional
 import uuid
+import razorpay
 from datetime import datetime, timezone
 
 
@@ -18,6 +19,7 @@ load_dotenv(ROOT_DIR / '.env')
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
+razorpay_client = razorpay.Client(auth=(os.environ['RAZORPAY_KEY_ID'], os.environ['RAZORPAY_KEY_SECRET']))
 
 # Create the main app without a prefix
 app = FastAPI()
@@ -66,6 +68,14 @@ class Rental(BaseModel):
     total: float
     status: str
     requested_at: str
+    payment_status: str = "unpaid"
+    razorpay_order_id: Optional[str] = None
+
+class PaymentVerify(BaseModel):
+    rental_id: str
+    razorpay_payment_id: str
+    razorpay_order_id: str
+    razorpay_signature: str
 
 SEED_TOOLS = [
     {"id":"tool-001","name":"Compact Field Tractor","category":"Tractors","description":"Reliable 45 HP tractor for ploughing, hauling and everyday field work.","location":"Nashik, Maharashtra","owner":"Green Valley Co-op","hourly_rate":850,"daily_rate":5800,"available":True,"image_url":"https://images.unsplash.com/photo-1606739211185-2c846d734a6d?auto=format&fit=crop&w=900&q=80","rating":4.9},
@@ -111,6 +121,37 @@ async def create_rental(input: RentalCreate):
     rental = Rental(id=str(uuid.uuid4()), tool_id=tool["id"], tool_name=tool["name"], renter_name=input.renter_name, duration=input.duration, unit=input.unit, total=total, status="Requested", requested_at=datetime.now(timezone.utc).isoformat())
     await db.rentals.insert_one(rental.model_dump())
     return rental
+
+@api_router.patch("/rentals/{rental_id}/approve", response_model=Rental)
+async def approve_rental(rental_id: str):
+    rental = await db.rentals.find_one({"id": rental_id}, {"_id": 0})
+    if not rental: raise HTTPException(status_code=404, detail="Rental not found")
+    if rental.get("status") == "Paid": return rental
+    await db.rentals.update_one({"id": rental_id}, {"$set": {"status": "Approved"}})
+    rental["status"] = "Approved"
+    return rental
+
+@api_router.post("/payments/order")
+async def create_payment_order(rental_id: str):
+    rental = await db.rentals.find_one({"id": rental_id}, {"_id": 0})
+    if not rental: raise HTTPException(status_code=404, detail="Rental not found")
+    if rental.get("status") != "Approved": raise HTTPException(status_code=400, detail="Rental must be approved before payment")
+    if rental.get("payment_status") == "paid": raise HTTPException(status_code=400, detail="Rental is already paid")
+    order = razorpay_client.order.create({"amount": int(round(rental["total"] * 100)), "currency": "INR", "receipt": f"rent_{rental_id[:30]}", "payment_capture": 1})
+    await db.rentals.update_one({"id": rental_id}, {"$set": {"razorpay_order_id": order["id"], "payment_status": "created"}})
+    return {"id": order["id"], "amount": order["amount"], "currency": order["currency"], "key_id": os.environ["RAZORPAY_KEY_ID"]}
+
+@api_router.post("/payments/verify")
+async def verify_payment(input: PaymentVerify):
+    rental = await db.rentals.find_one({"id": input.rental_id}, {"_id": 0})
+    if not rental: raise HTTPException(status_code=404, detail="Rental not found")
+    if rental.get("razorpay_order_id") != input.razorpay_order_id: raise HTTPException(status_code=400, detail="Payment order does not match rental")
+    try:
+        razorpay_client.utility.verify_payment_signature({"razorpay_order_id": input.razorpay_order_id, "razorpay_payment_id": input.razorpay_payment_id, "razorpay_signature": input.razorpay_signature})
+    except Exception:
+        raise HTTPException(status_code=400, detail="Payment signature verification failed")
+    await db.rentals.update_one({"id": input.rental_id}, {"$set": {"status": "Paid", "payment_status": "paid"}})
+    return {"status": "paid", "rental_id": input.rental_id}
 
 @api_router.post("/status", response_model=StatusCheck)
 async def create_status_check(input: StatusCheckCreate):
